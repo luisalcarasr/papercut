@@ -5,10 +5,34 @@ import { persist } from 'zustand/middleware'
 import type { ImageSource } from '../domain/piece'
 import type { CutLineConfig } from '../domain/cutlines'
 import { DEFAULT_CUT_LINE } from '../domain/cutlines'
+import { getPaper, paperDimensions } from '../domain/paper'
 import type { PaperOrientation } from '../domain/paper'
 import type { MixedCell } from '../domain/layout/mixed'
 import type { GridCell } from '../domain/layout/grid'
 import type { Unit } from '../domain/units'
+
+/** Returns the max usable height (cm) for a given paper + orientation.
+ *  When orientation is 'auto', uses the larger side. */
+export function maxHeightCm(paperId: string, orientation: PaperOrientation | 'auto'): number {
+  const paper = getPaper(paperId)
+  if (!paper) return 200
+  if (orientation === 'auto') return Math.max(paper.widthCm, paper.heightCm)
+  return paperDimensions(paper, orientation).heightCm
+}
+
+function clampHeights(
+  targetHeightCm: number,
+  slots: ImageSlotConfig[],
+  maxH: number,
+): { targetHeightCm: number; slots: ImageSlotConfig[] } {
+  const newTarget = Math.min(targetHeightCm, maxH)
+  const newSlots  = slots.map(s =>
+    s.sizeMode === 'height' && s.heightCm !== undefined && s.heightCm > maxH
+      ? { ...s, heightCm: maxH }
+      : s,
+  )
+  return { targetHeightCm: newTarget, slots: newSlots }
+}
 
 export type LayoutMode = 'grid' | 'twoVertOneH' | 'multiImage' | 'guillotine' | 'auto'
 
@@ -111,8 +135,16 @@ export const useStore = create<AppState>()(
       // ── Paper ──────────────────────────────────────────────────────────────
       paperId:     'ANSI-B',
       orientation: 'portrait',
-      setPaper:       id => set({ paperId: id }),
-      setOrientation: o  => set({ orientation: o }),
+      setPaper: id => set(s => {
+        const maxH   = maxHeightCm(id, s.orientation)
+        const clamped = clampHeights(s.targetHeightCm, s.slots, maxH)
+        return { paperId: id, ...clamped }
+      }),
+      setOrientation: o => set(s => {
+        const maxH   = maxHeightCm(s.paperId, o)
+        const clamped = clampHeights(s.targetHeightCm, s.slots, maxH)
+        return { orientation: o, ...clamped }
+      }),
 
       // ── Size ───────────────────────────────────────────────────────────────
       targetHeightCm: 14,

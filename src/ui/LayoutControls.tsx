@@ -1,6 +1,7 @@
-import { useStore } from '../state/store'
+import { useStore, maxHeightCm } from '../state/store'
 import type { LayoutMode, CountMode, SizeMode, ImageSlotConfig } from '../state/store'
 import { NumberField, IntField } from './NumberField'
+import { HeightSlider } from './HeightSlider'
 import { cmToIn, inToCm } from '../domain/units'
 
 // ── Mode definitions ──────────────────────────────────────────────────────────
@@ -14,18 +15,17 @@ const MODES: { id: LayoutMode; label: string; desc: string }[] = [
 
 // ── Per-image slot card ───────────────────────────────────────────────────────
 function SlotCard({
-  slot, idx, unit, globalHeight,
+  slot, idx, unit, globalHeight, maxCm,
 }: {
   slot: ImageSlotConfig
   idx: number
   unit: 'cm' | 'in'
   globalHeight: number
+  maxCm: number
 }) {
   const { updateSlot, sources } = useStore()
   const src = sources.find(s => s.id === slot.sourceId)
 
-  const displayH = (cm: number) => unit === 'cm' ? cm : cmToIn(cm)
-  const toStore   = (v: number) => unit === 'cm' ? v : inToCm(v)
   const resolvedH = slot.sizeMode === 'height' && slot.heightCm ? slot.heightCm : globalHeight
 
   return (
@@ -84,20 +84,16 @@ function SlotCard({
           ))}
         </div>
         {slot.sizeMode === 'height' && (
-          <NumberField
-            value={displayH(slot.heightCm ?? resolvedH)}
-            onChange={v => updateSlot(idx, { heightCm: toStore(v) })}
-            min={0.5}
-            max={200}
-            step={unit === 'cm' ? 0.5 : 0.25}
-            decimals={unit === 'cm' ? 1 : 2}
-            suffix={unit}
-            className="w-full"
+          <HeightSlider
+            value={slot.heightCm ?? resolvedH}
+            onChange={v => updateSlot(idx, { heightCm: v })}
+            maxCm={maxCm}
+            unit={unit}
           />
         )}
         {slot.sizeMode === 'inherit' && (
           <p className="text-xs text-zinc-500">
-            Using global: {displayH(globalHeight).toFixed(unit === 'cm' ? 1 : 2)} {unit}
+            Using global: {unit === 'cm' ? globalHeight.toFixed(1) : (globalHeight / 2.54).toFixed(2)} {unit}
           </p>
         )}
       </div>
@@ -158,9 +154,11 @@ function SlotCard({
 export function LayoutControls() {
   const {
     layoutMode, gridCols, gridRows, gap, slots, sources,
-    targetHeightCm, unit,
+    targetHeightCm, unit, paperId, orientation,
     setLayoutMode, setGridCols, setGridRows, setGap,
   } = useStore()
+
+  const maxCm = maxHeightCm(paperId, orientation)
 
   return (
     <div className="space-y-4">
@@ -239,6 +237,7 @@ export function LayoutControls() {
                 idx={i}
                 unit={unit}
                 globalHeight={targetHeightCm}
+                maxCm={maxCm}
               />
             )
           })}
