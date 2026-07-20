@@ -61,7 +61,10 @@ export function ImageDropzone() {
         className="border-2 border-dashed border-zinc-600 rounded-xl p-6 text-center cursor-pointer hover:border-indigo-400 transition-colors"
         onClick={() => document.getElementById('file-input')?.click()}
       >
-        <p className="text-zinc-400 text-sm">Drop images here or click to select</p>
+        <p className="text-zinc-400 text-sm">
+          <span className="hidden sm:inline">Drop images here or click to select</span>
+          <span className="sm:hidden">Tap to select images</span>
+        </p>
         <p className="text-zinc-500 text-xs mt-1">JPEG, PNG supported</p>
         <input
           id="file-input"
