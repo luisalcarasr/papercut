@@ -8,9 +8,10 @@ import { useEffect, useRef, useCallback } from 'react'
 import { useStore } from '../state/store'
 import { getPaper, paperDimensions } from '../domain/paper'
 import { effectiveRatio } from '../domain/piece'
-import { twoVertOneHoriz, multiImageRows } from '../domain/layout/mixed'
+import { twoVertOneHoriz } from '../domain/layout/mixed'
 import { buildGridLayout, gridCells } from '../domain/layout/grid'
 import { optimizeLayout } from '../domain/layout/optimize'
+import { packMultiImage } from '../domain/layout/multiImage'
 import type { MixedCell } from '../domain/layout/mixed'
 import type { GridCell } from '../domain/layout/grid'
 
@@ -39,14 +40,17 @@ function shallowEqual(a: Record<string, unknown>, b: Record<string, unknown>) {
 
 export function useLayoutEngine() {
   const computeTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const lastInputs = useRef<Record<string, unknown> | null>(null)
+  const lastInputs     = useRef<Record<string, unknown> | null>(null)
 
   const compute = useCallback(() => {
     const {
       sources, paperId, orientation, targetHeightCm, tolerancePct,
       layoutMode, gridCols, gridRows, gap, slots,
-      setCells,
+      ensureSlots, setCells,
     } = useStore.getState()
+
+    // Keep slots in sync with sources (no-op if already correct)
+    ensureSlots()
 
     if (sources.length === 0) {
       setCells([], 0)
@@ -63,65 +67,104 @@ export function useLayoutEngine() {
       let cells: (GridCell | MixedCell)[] = []
       let coverage = 0
 
+      // ── 2V + 1H ──────────────────────────────────────────────────────────
       if (layoutMode === 'twoVertOneH' && sources.length >= 1) {
-        const src  = sources[0]
-        const half = slots[0]?.half ?? null
+        const src   = sources[0]
+        const slot  = slots[0]
+        const half  = slot?.half ?? null
         const ratio = effectiveRatio(src, half)
         const layout = twoVertOneHoriz(widthCm, heightCm, ratio, gap, 0, half)
         cells    = layout.cells
         coverage = layout.coverage * 100
 
-      } else if (layoutMode === 'multiRow' && sources.length >= 2) {
-        const slotDefs = slots.slice(0, 2).map((s, i) => ({
-          sourceIndex: i,
-          ratio:       effectiveRatio(sources[i], s.half),
-          minCount:    s.minCount,
-          half:        s.half,
-        }))
-        const layout = multiImageRows({
-          paperW: widthCm, paperH: heightCm,
-          slots: slotDefs, gap,
-          targetH: targetHeightCm,
-        })
-        cells    = layout.cells
-        coverage = layout.coverage * 100
-
+      // ── Grid NxM ─────────────────────────────────────────────────────────
       } else if (layoutMode === 'grid') {
-        const src  = sources[0]
-        const half = slots[0]?.half ?? null
+        const src   = sources[0]
+        const slot  = slots[0]
+        const half  = slot?.half ?? null
+        const h     = slot?.sizeMode === 'height' && slot.heightCm ? slot.heightCm : targetHeightCm
         const ratio = effectiveRatio(src, half)
-        const cellW = targetHeightCm * ratio
         const layout = buildGridLayout({
           paperW: widthCm, paperH: heightCm,
-          cellW, cellH: targetHeightCm,
+          cellW: h * ratio, cellH: h,
           cols: gridCols, rows: gridRows,
         })
         cells    = gridCells(layout, 0, 0, half)
         coverage = layout.coverage * 100
 
-      } else {
-        // auto / guillotine
-        const pieces = sources.map((src, i) => {
-          const half  = slots[i]?.half ?? null
+      // ── Multi-image (N images, per-image size/count) ──────────────────────
+      } else if (layoutMode === 'multiImage') {
+        const multiSlots = sources.map((src, i) => {
+          const slot  = slots[i] ?? {}
+          const half  = slot.half ?? null
           const ratio = effectiveRatio(src, half)
-          return { id: `src-${i}`, ratio, minCount: slots[i]?.minCount ?? 1 }
-        })
-        const result = optimizeLayout({
-          paperW: widthCm, paperH: heightCm,
-          targetH: targetHeightCm,
-          tolerance: tolerancePct / 100,
-          gap, pieces,
-          mode: layoutMode === 'guillotine' ? 'guillotine' : 'auto',
-        })
-        cells = result.placements.map(p => {
-          const idx  = parseInt(p.pieceId.replace('src-', ''))
-          const half = slots[idx]?.half ?? null
+          const h     = slot.sizeMode === 'height' && slot.heightCm
+            ? slot.heightCm
+            : targetHeightCm
           return {
-            x: p.x, y: p.y, widthCm: p.widthCm, heightCm: p.heightCm,
-            sourceIndex: idx, rotation: 0 as const, half,
+            sourceIndex: i,
+            ratio,
+            half,
+            heightCm:  h,
+            countMode: slot.countMode ?? 'fill' as const,
+            count:     slot.count,
+            percent:   slot.percent,
           }
         })
+        const result = packMultiImage({ paperW: widthCm, paperH: heightCm, gap, slots: multiSlots })
+        cells    = result.cells
         coverage = result.coverage * 100
+
+      // ── Auto / Guillotine ─────────────────────────────────────────────────
+      } else {
+        const pieces = sources.map((src, i) => {
+          const slot  = slots[i] ?? {}
+          const half  = slot.half ?? null
+          const ratio = effectiveRatio(src, half)
+          const h     = slot.sizeMode === 'height' && slot.heightCm
+            ? slot.heightCm
+            : targetHeightCm
+          // Convert per-image height into a fixed ratio for the optimizer
+          // by using the ratio directly; the optimizer uses targetH as height
+          return {
+            id:       `src-${i}`,
+            ratio,
+            minCount: slot.countMode === 'exact' ? (slot.count ?? 1) : 1,
+            heightCm: h,
+          }
+        })
+
+        if (pieces.length === 1) {
+          // Single image: fast grid path
+          const p    = pieces[0]
+          const h    = p.heightCm
+          const result = optimizeLayout({
+            paperW: widthCm, paperH: heightCm,
+            targetH: h, tolerance: tolerancePct / 100,
+            gap, pieces: [{ id: p.id, ratio: p.ratio, minCount: 1 }],
+            mode: layoutMode === 'guillotine' ? 'guillotine' : 'auto',
+          })
+          cells = result.placements.map(pl => {
+            const idx  = parseInt(pl.pieceId.replace('src-', ''))
+            const half = slots[idx]?.half ?? null
+            return { x: pl.x, y: pl.y, widthCm: pl.widthCm, heightCm: pl.heightCm, sourceIndex: idx, rotation: 0 as const, half }
+          })
+          coverage = result.coverage * 100
+        } else {
+          // Multi-image auto: delegate to packMultiImage with fill counts
+          const multiSlots = pieces.map((p, i) => ({
+            sourceIndex: i,
+            ratio:       p.ratio,
+            half:        slots[i]?.half ?? null,
+            heightCm:    p.heightCm,
+            countMode:   (slots[i]?.countMode ?? 'fill') as 'fill' | 'exact' | 'percent',
+            count:       slots[i]?.count,
+            percent:     slots[i]?.percent,
+          }))
+          const result = packMultiImage({ paperW: widthCm, paperH: heightCm, gap, slots: multiSlots })
+          cells    = result.cells
+          coverage = result.coverage * 100
+        }
       }
 
       setCells(cells, coverage)
@@ -131,10 +174,8 @@ export function useLayoutEngine() {
   }, [])
 
   useEffect(() => {
-    // Initial compute
     compute()
 
-    // Subscribe only to input-relevant fields to avoid feedback loop
     const unsub = useStore.subscribe(() => {
       const next = inputSelector(useStore.getState()) as Record<string, unknown>
       if (lastInputs.current && shallowEqual(lastInputs.current, next)) return

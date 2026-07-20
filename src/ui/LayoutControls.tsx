@@ -1,32 +1,171 @@
 import { useStore } from '../state/store'
-import type { LayoutMode } from '../state/store'
+import type { LayoutMode, CountMode, SizeMode, ImageSlotConfig } from '../state/store'
+import { NumberField, IntField } from './NumberField'
+import { cmToIn, inToCm } from '../domain/units'
 
+// ── Mode definitions ──────────────────────────────────────────────────────────
 const MODES: { id: LayoutMode; label: string; desc: string }[] = [
-  { id: 'auto',        label: 'Auto',           desc: 'Best layout chosen automatically' },
-  { id: 'grid',        label: 'Grid N×M',        desc: 'Uniform grid, same piece' },
-  { id: 'twoVertOneH', label: '2V + 1H',         desc: '2 vertical + 1 horizontal rotated' },
-  { id: 'multiRow',    label: 'Multi-image rows', desc: 'Mix images by row with minimums' },
-  { id: 'guillotine',  label: 'Guillotine',       desc: '2D packing, max coverage' },
+  { id: 'auto',       label: 'Auto',           desc: 'Best layout chosen automatically' },
+  { id: 'multiImage', label: 'Multi-image',    desc: 'N images with count & size per image' },
+  { id: 'grid',       label: 'Grid N×M',       desc: 'Uniform grid, same piece' },
+  { id: 'twoVertOneH', label: '2V + 1H',       desc: '2 vertical + 1 horizontal rotated' },
+  { id: 'guillotine', label: 'Guillotine',      desc: '2D packing, max coverage' },
 ]
 
+// ── Per-image slot card ───────────────────────────────────────────────────────
+function SlotCard({
+  slot, idx, unit, globalHeight,
+}: {
+  slot: ImageSlotConfig
+  idx: number
+  unit: 'cm' | 'in'
+  globalHeight: number
+}) {
+  const { updateSlot, sources } = useStore()
+  const src = sources.find(s => s.id === slot.sourceId)
+
+  const displayH = (cm: number) => unit === 'cm' ? cm : cmToIn(cm)
+  const toStore   = (v: number) => unit === 'cm' ? v : inToCm(v)
+  const resolvedH = slot.sizeMode === 'height' && slot.heightCm ? slot.heightCm : globalHeight
+
+  return (
+    <div className="bg-zinc-800 rounded-xl p-3 space-y-3 border border-zinc-700">
+      {/* Header */}
+      <div className="flex items-center gap-2 min-w-0">
+        {src && (
+          <img src={src.dataUrl} alt="" className="w-8 h-8 rounded object-cover shrink-0" />
+        )}
+        <div className="min-w-0 flex-1">
+          <p className="text-xs font-medium text-zinc-200 truncate">
+            #{idx + 1} {src?.name ?? slot.sourceId}
+          </p>
+          <p className="text-xs text-zinc-500">
+            {src ? `${src.naturalWidth}×${src.naturalHeight}px` : ''}
+          </p>
+        </div>
+      </div>
+
+      {/* Crop half */}
+      <div>
+        <label className="text-xs text-zinc-400 mb-1 block">Crop</label>
+        <div className="flex gap-1">
+          {(['full', 'left', 'right'] as const).map(h => (
+            <button
+              key={h}
+              onClick={() => updateSlot(idx, { half: h === 'full' ? null : h })}
+              className={`flex-1 text-xs py-1.5 rounded-lg border transition-colors ${
+                (h === 'full' && slot.half === null) || slot.half === h
+                  ? 'bg-indigo-600 border-indigo-500 text-white'
+                  : 'bg-zinc-700 border-zinc-600 text-zinc-300 hover:border-indigo-400'
+              }`}
+            >
+              {h === 'full' ? 'Full' : h === 'left' ? '← Left' : 'Right →'}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Size */}
+      <div>
+        <label className="text-xs text-zinc-400 mb-1 block">Height</label>
+        <div className="flex gap-1 mb-1.5">
+          {(['inherit', 'height'] as SizeMode[]).map(m => (
+            <button
+              key={m}
+              onClick={() => updateSlot(idx, { sizeMode: m, heightCm: m === 'height' ? resolvedH : undefined })}
+              className={`flex-1 text-xs py-1.5 rounded-lg border transition-colors ${
+                slot.sizeMode === m
+                  ? 'bg-indigo-600 border-indigo-500 text-white'
+                  : 'bg-zinc-700 border-zinc-600 text-zinc-300 hover:border-indigo-400'
+              }`}
+            >
+              {m === 'inherit' ? 'Global' : 'Custom'}
+            </button>
+          ))}
+        </div>
+        {slot.sizeMode === 'height' && (
+          <NumberField
+            value={displayH(slot.heightCm ?? resolvedH)}
+            onChange={v => updateSlot(idx, { heightCm: toStore(v) })}
+            min={0.5}
+            max={200}
+            step={unit === 'cm' ? 0.5 : 0.25}
+            decimals={unit === 'cm' ? 1 : 2}
+            suffix={unit}
+            className="w-full"
+          />
+        )}
+        {slot.sizeMode === 'inherit' && (
+          <p className="text-xs text-zinc-500">
+            Using global: {displayH(globalHeight).toFixed(unit === 'cm' ? 1 : 2)} {unit}
+          </p>
+        )}
+      </div>
+
+      {/* Count */}
+      <div>
+        <label className="text-xs text-zinc-400 mb-1 block">Quantity</label>
+        <div className="flex gap-1 mb-1.5">
+          {([
+            { id: 'fill' as CountMode, label: 'Fill' },
+            { id: 'exact' as CountMode, label: 'Exact' },
+            { id: 'percent' as CountMode, label: '%' },
+          ]).map(m => (
+            <button
+              key={m.id}
+              onClick={() => updateSlot(idx, { countMode: m.id })}
+              className={`flex-1 text-xs py-1.5 rounded-lg border transition-colors ${
+                slot.countMode === m.id
+                  ? 'bg-indigo-600 border-indigo-500 text-white'
+                  : 'bg-zinc-700 border-zinc-600 text-zinc-300 hover:border-indigo-400'
+              }`}
+            >
+              {m.label}
+            </button>
+          ))}
+        </div>
+
+        {slot.countMode === 'exact' && (
+          <IntField
+            value={slot.count ?? 1}
+            onChange={v => updateSlot(idx, { count: Math.max(1, v) })}
+            min={1}
+            max={999}
+            className="w-full"
+            placeholder="copies"
+          />
+        )}
+        {slot.countMode === 'percent' && (
+          <NumberField
+            value={slot.percent ?? 50}
+            onChange={v => updateSlot(idx, { percent: Math.max(1, Math.min(100, v)) })}
+            min={1}
+            max={100}
+            decimals={0}
+            suffix="%"
+            className="w-full"
+          />
+        )}
+        {slot.countMode === 'fill' && (
+          <p className="text-xs text-zinc-500">Fills remaining space on the sheet</p>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── Main component ────────────────────────────────────────────────────────────
 export function LayoutControls() {
   const {
     layoutMode, gridCols, gridRows, gap, slots, sources,
+    targetHeightCm, unit,
     setLayoutMode, setGridCols, setGridRows, setGap,
-    updateSlotMin, updateSlotHalf, setSlots,
   } = useStore()
 
-  // Sync slots with sources when sources change
-  const syncSlots = () => {
-    const newSlots = sources.map(src => {
-      const existing = slots.find(s => s.sourceId === src.id)
-      return existing ?? { sourceId: src.id, minCount: 1, half: null as null }
-    })
-    setSlots(newSlots)
-  }
-
   return (
-    <div className="space-y-3">
+    <div className="space-y-4">
+
+      {/* Mode selector */}
       <div>
         <label className="text-xs text-zinc-400 mb-1 block">Layout mode</label>
         <div className="grid grid-cols-1 gap-1">
@@ -41,72 +180,75 @@ export function LayoutControls() {
               }`}
             >
               <span className="font-medium">{m.label}</span>
-              <span className="text-zinc-400 ml-2">{m.desc}</span>
+              <span className={`ml-2 ${layoutMode === m.id ? 'text-indigo-200' : 'text-zinc-500'}`}>
+                {m.desc}
+              </span>
             </button>
           ))}
         </div>
       </div>
 
+      {/* Grid NxM controls */}
       {layoutMode === 'grid' && (
         <div className="flex gap-3">
           <div className="flex-1">
             <label className="text-xs text-zinc-400 mb-1 block">Cols</label>
-            <input type="number" min={1} max={20} value={gridCols}
-              onChange={e => setGridCols(Number(e.target.value))}
-              className="w-full bg-zinc-800 text-zinc-100 text-sm rounded-lg px-3 py-2 border border-zinc-700 focus:outline-none focus:border-indigo-500"
-            />
+            <IntField value={gridCols} onChange={setGridCols} min={1} max={20} className="w-full" />
           </div>
           <div className="flex-1">
             <label className="text-xs text-zinc-400 mb-1 block">Rows</label>
-            <input type="number" min={1} max={20} value={gridRows}
-              onChange={e => setGridRows(Number(e.target.value))}
-              className="w-full bg-zinc-800 text-zinc-100 text-sm rounded-lg px-3 py-2 border border-zinc-700 focus:outline-none focus:border-indigo-500"
-            />
+            <IntField value={gridRows} onChange={setGridRows} min={1} max={20} className="w-full" />
           </div>
         </div>
       )}
 
+      {/* Gap */}
       <div>
-        <label className="text-xs text-zinc-400 mb-1 block">Gap / margin (cm)</label>
-        <input type="number" min={0} max={5} step={0.1} value={gap}
-          onChange={e => setGap(Number(e.target.value))}
-          className="w-full bg-zinc-800 text-zinc-100 text-sm rounded-lg px-3 py-2 border border-zinc-700 focus:outline-none focus:border-indigo-500"
+        <label className="text-xs text-zinc-400 mb-1 block">
+          Gap / margin ({unit === 'cm' ? 'cm' : 'in'})
+        </label>
+        <NumberField
+          value={unit === 'cm' ? gap : cmToIn(gap)}
+          onChange={v => setGap(unit === 'cm' ? v : inToCm(v))}
+          min={0}
+          max={10}
+          step={unit === 'cm' ? 0.1 : 0.05}
+          decimals={unit === 'cm' ? 1 : 2}
+          suffix={unit}
+          className="w-full"
         />
       </div>
 
+      {/* Per-image cards */}
       {sources.length > 0 && (
-        <div className="space-y-2">
+        <div className="space-y-3">
           <div className="flex items-center justify-between">
-            <label className="text-xs text-zinc-400">Image slots</label>
-            <button onClick={syncSlots} className="text-xs text-indigo-400 hover:text-indigo-300">
-              Sync
-            </button>
+            <label className="text-xs text-zinc-400">
+              Images ({sources.length})
+            </label>
           </div>
-          {slots.map((slot, idx) => {
-            const src = sources.find(s => s.id === slot.sourceId)
+
+          {sources.map((src, i) => {
+            const slot = slots.find(s => s.sourceId === src.id) ?? {
+              sourceId: src.id, half: null, sizeMode: 'inherit' as const, countMode: 'fill' as const,
+            }
             return (
-              <div key={slot.sourceId} className="bg-zinc-800 rounded-lg p-2 space-y-1">
-                <p className="text-xs text-zinc-300 truncate">#{idx+1} {src?.name ?? slot.sourceId}</p>
-                <div className="flex gap-2 items-center">
-                  <label className="text-xs text-zinc-500">Min copies</label>
-                  <input type="number" min={0} max={100} value={slot.minCount}
-                    onChange={e => updateSlotMin(idx, Number(e.target.value))}
-                    className="w-16 bg-zinc-700 text-zinc-100 text-xs rounded px-2 py-1 border border-zinc-600"
-                  />
-                  <label className="text-xs text-zinc-500 ml-2">Half</label>
-                  <select value={slot.half ?? 'none'}
-                    onChange={e => updateSlotHalf(idx, e.target.value === 'none' ? null : e.target.value as 'left'|'right')}
-                    className="bg-zinc-700 text-zinc-100 text-xs rounded px-2 py-1 border border-zinc-600"
-                  >
-                    <option value="none">Full</option>
-                    <option value="left">Left half</option>
-                    <option value="right">Right half</option>
-                  </select>
-                </div>
-              </div>
+              <SlotCard
+                key={src.id}
+                slot={slot}
+                idx={i}
+                unit={unit}
+                globalHeight={targetHeightCm}
+              />
             )
           })}
         </div>
+      )}
+
+      {sources.length === 0 && (
+        <p className="text-xs text-zinc-500 text-center py-4">
+          Add images to configure per-image settings
+        </p>
       )}
     </div>
   )
